@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dataset-doctor"
+version = "0.1.0"
+description = "Deterministic, AI-free checks for text datasets"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Dataset-Doctor contributors" }]
+dependencies = []
+
+[project.scripts]
+dataset-doctor = "dataset_doctor.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
