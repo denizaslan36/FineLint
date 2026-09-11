@@ -130,7 +130,7 @@ reason codes. It deliberately contains no `keep`, `delete`, or `fix` decision.
 
 ```json
 {
-  "report_schema_version": 2,
+  "report_schema_version": 3,
   "records": [
     {
       "split": "validation",
@@ -155,7 +155,76 @@ Use custom output paths with `--report` and `--affected-records`. FineLint refus
 to overwrite an input dataset.
 
 A completed scan exits with code `0`, even when it reports findings. Invalid input,
-configuration problems, and fatal processing errors return a nonzero code.
+configuration problems, and fatal processing errors return exit code `1`. CI policy
+failures use exit code `2` after both report files have been written.
+
+## Project configuration
+
+FineLint automatically reads `.finelint.json` from the current working directory.
+Use `--config PATH` to select another file or `--no-config` to disable discovery.
+Command-line values override project configuration.
+
+```json
+{
+  "version": 1,
+  "fail_on": "error",
+  "fail_scope": "all",
+  "disabled_rules": ["CHAT_CONSECUTIVE_ROLE"],
+  "inspect": {
+    "schema": "auto",
+    "fields": ["prompt", "response"],
+    "input_fields": ["prompt"],
+    "output_fields": ["response"],
+    "id_field": "id",
+    "similarity_threshold": 0.92,
+    "min_text_length": 60
+  },
+  "compare": {
+    "id_field": "id",
+    "similarity_threshold": 0.92,
+    "min_text_length": 60,
+    "schemas": {
+      "train": "openai",
+      "validation": "sharegpt"
+    }
+  }
+}
+```
+
+Split paths deliberately stay on the command line. Unknown configuration keys and
+invalid values are rejected instead of being silently ignored.
+
+## CI gates and baselines
+
+Use `--fail-on error` or `--fail-on warning` when findings should fail a CI job.
+The default remains `never`, preserving FineLint's report-only behavior.
+
+To fail only for regressions, first keep a FineLint report as the baseline and then
+compare later scans against it:
+
+```bash
+finelint compare \
+  --split train=train.jsonl \
+  --split validation=validation.jsonl \
+  --baseline baseline-report.json \
+  --fail-on error \
+  --fail-scope new
+```
+
+The report classifies current findings as `new` or `unchanged` and lists resolved
+finding IDs in its `baseline` section. Baselines must use report schema version 3;
+older reports should be regenerated with FineLint 0.3.
+
+In GitHub Actions, the CLI can be used directly as a required check:
+
+```yaml
+- uses: actions/checkout@v7
+- uses: actions/setup-python@v7
+  with:
+    python-version: "3.12"
+- run: python -m pip install .
+- run: finelint inspect data/train.jsonl --fail-on error
+```
 
 ## Generic datasets
 
@@ -193,8 +262,8 @@ deterministic output, source-file safety, and the no-model/no-verdict boundary.
 ## Roadmap
 
 - dataset facts: length, role, source, Unicode script, and template distributions;
-- reproducible project rules through `.finelint.toml` and report diffs;
-- DPO, evaluation, and deterministic PII/secret checks;
+- SARIF/JUnit output and large-dataset performance benchmarks;
+- DPO, evaluation, multimodal, and deterministic PII/secret checks;
 - a stable adapter and rule extension interface.
 
 ## License

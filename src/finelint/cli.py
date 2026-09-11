@@ -10,12 +10,16 @@ from . import __version__
 from .analyzer import ConfigurationError
 from .chat import CHAT_SCHEMAS, SCHEMAS, adapt_chat, analyze_chat
 from .comparison import compare_splits
+from .config import ProjectConfig, load_project_config
 from .models import ScanConfig, SplitInput
 from .readers import DatasetReadError, read_dataset
 from .report import (
     build_affected_records,
     build_comparison_report,
     build_report,
+    apply_baseline,
+    load_baseline,
+    report_content_sha256,
     write_report,
 )
 
@@ -26,14 +30,37 @@ def _add_similarity_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--similarity-threshold",
         type=float,
-        default=0.95,
+        default=None,
         help="Near-duplicate Jaccard threshold (default: 0.95).",
     )
     parser.add_argument(
         "--min-text-length",
         type=int,
-        default=40,
+        default=None,
         help="Minimum normalized text length for near-duplicate checks (default: 40).",
+    )
+
+
+def _add_project_options(parser: argparse.ArgumentParser) -> None:
+    config = parser.add_mutually_exclusive_group()
+    config.add_argument("--config", type=Path, help="FineLint JSON configuration path.")
+    config.add_argument(
+        "--no-config", action="store_true", help="Do not load .finelint.json."
+    )
+    parser.add_argument(
+        "--baseline", type=Path, help="Previous report schema v3 JSON report."
+    )
+    parser.add_argument(
+        "--fail-on",
+        choices=("never", "error", "warning"),
+        default=None,
+        help="Return exit code 2 at or above this severity (default: never).",
+    )
+    parser.add_argument(
+        "--fail-scope",
+        choices=("all", "new"),
+        default=None,
+        help="Apply the CI gate to all or only new findings (default: all).",
     )
 
 
@@ -55,7 +82,7 @@ def _parser() -> argparse.ArgumentParser:
     inspect.add_argument(
         "--schema",
         choices=SCHEMAS,
-        default="auto",
+        default=None,
         help="Dataset schema (default: auto).",
     )
     inspect.add_argument(
@@ -64,23 +91,24 @@ def _parser() -> argparse.ArgumentParser:
     inspect.add_argument(
         "--input-fields",
         action="append",
-        default=[],
+        default=None,
         help="Generic input field; repeatable.",
     )
     inspect.add_argument(
         "--output-fields",
         action="append",
-        default=[],
+        default=None,
         help="Generic output field; repeatable.",
     )
     inspect.add_argument(
         "--required-fields",
         action="append",
-        default=[],
+        default=None,
         help="Required field; repeatable.",
     )
     inspect.add_argument("--id-field", help="Field included as a record identifier.")
     _add_similarity_options(inspect)
+    _add_project_options(inspect)
     inspect.add_argument("--report", type=Path, help="Main JSON report path.")
     inspect.add_argument(
         "--affected-records", type=Path, help="Affected-records JSON path."
@@ -99,12 +127,13 @@ def _parser() -> argparse.ArgumentParser:
     compare.add_argument(
         "--schema",
         action="append",
-        default=[],
+        default=None,
         metavar="NAME=SCHEMA",
         help="Override one split schema; repeatable.",
     )
     compare.add_argument("--id-field", help="Field included as a record identifier.")
     _add_similarity_options(compare)
+    _add_project_options(compare)
     compare.add_argument("--report", type=Path, help="Comparison JSON report path.")
     compare.add_argument(
         "--affected-records", type=Path, help="Affected-records JSON path."
@@ -153,6 +182,52 @@ def _validate_similarity(threshold: float, min_length: int) -> None:
         raise ConfigurationError("--min-text-length must be at least 1.")
 
 
+def _option(
+    cli_value: object,
+    config: ProjectConfig,
+    section: str,
+    key: str,
+    default: object,
+) -> object:
+    if cli_value is not None:
+        return cli_value
+    return config.section(section).get(key, default)
+
+
+def _project_options(
+    args: argparse.Namespace, config: ProjectConfig
+) -> tuple[str, str, list[str]]:
+    fail_on = args.fail_on or config.values.get("fail_on", "never")
+    fail_scope = args.fail_scope or config.values.get("fail_scope", "all")
+    disabled_rules = list(config.values.get("disabled_rules", []))
+    if fail_scope == "new" and args.baseline is None:
+        raise ConfigurationError("--fail-scope new requires --baseline.")
+    return fail_on, fail_scope, disabled_rules
+
+
+def _apply_baseline_and_hash(
+    report: dict, baseline_path: Path | None
+) -> None:
+    if baseline_path is not None:
+        try:
+            baseline, digest = load_baseline(baseline_path)
+            apply_baseline(report, baseline, baseline_path, digest)
+        except ValueError as exc:
+            raise ConfigurationError(str(exc)) from exc
+    report["content_sha256"] = report_content_sha256(report)
+
+
+def _gate_failed(report: dict, fail_on: str, fail_scope: str) -> bool:
+    if fail_on == "never":
+        return False
+    severities = {"error"} if fail_on == "error" else {"error", "warning"}
+    return any(
+        finding["severity"] in severities
+        and (fail_scope == "all" or finding.get("baseline_status") == "new")
+        for finding in report["findings"]
+    )
+
+
 def _print_summary(
     title: str, schemas: str, report_path: Path, affected_path: Path, findings: list
 ) -> None:
@@ -181,34 +256,94 @@ def _print_summary(
 
 
 def _run_inspect(args: argparse.Namespace) -> None:
-    _validate_similarity(args.similarity_threshold, args.min_text_length)
+    project = load_project_config(args.config, args.no_config)
+    fail_on, fail_scope, disabled_rules = _project_options(args, project)
+    schema = _option(args.schema, project, "inspect", "schema", "auto")
+    fields = _option(args.fields, project, "inspect", "fields", None)
+    input_fields = _option(
+        args.input_fields, project, "inspect", "input_fields", []
+    )
+    output_fields = _option(
+        args.output_fields, project, "inspect", "output_fields", []
+    )
+    required_fields = _option(
+        args.required_fields, project, "inspect", "required_fields", []
+    )
+    id_field = _option(args.id_field, project, "inspect", "id_field", None)
+    similarity_threshold = _option(
+        args.similarity_threshold,
+        project,
+        "inspect",
+        "similarity_threshold",
+        0.95,
+    )
+    min_text_length = _option(
+        args.min_text_length, project, "inspect", "min_text_length", 40
+    )
+    assert isinstance(schema, str)
+    assert fields is None or isinstance(fields, list)
+    assert isinstance(input_fields, list)
+    assert isinstance(output_fields, list)
+    assert isinstance(required_fields, list)
+    assert id_field is None or isinstance(id_field, str)
+    assert isinstance(similarity_threshold, (int, float))
+    assert isinstance(min_text_length, int)
+    _validate_similarity(float(similarity_threshold), min_text_length)
     report_path, affected_path = _inspect_paths(
         args.dataset, args.report, args.affected_records
     )
     config = ScanConfig(
-        fields=args.fields,
-        input_fields=args.input_fields,
-        output_fields=args.output_fields,
-        required_fields=args.required_fields,
-        id_field=args.id_field,
-        similarity_threshold=args.similarity_threshold,
-        min_text_length=args.min_text_length,
-        schema=args.schema,
+        fields=fields,
+        input_fields=input_fields,
+        output_fields=output_fields,
+        required_fields=required_fields,
+        id_field=id_field,
+        similarity_threshold=float(similarity_threshold),
+        min_text_length=min_text_length,
+        schema=schema,
     )
     result = read_dataset(args.dataset, args.format)
-    chat = adapt_chat(result, args.schema, args.id_field)
+    chat = adapt_chat(result, schema, id_field)
     fields, findings = analyze_chat(result, config, chat)
-    report = build_report(result, config, fields, findings, chat.schema)
+    findings = [finding for finding in findings if finding.code not in disabled_rules]
+    report = build_report(
+        result,
+        config,
+        fields,
+        findings,
+        chat.schema,
+        project.path,
+        disabled_rules,
+    )
+    _apply_baseline_and_hash(report, args.baseline)
     affected = build_affected_records(findings)
     write_report(report, report_path)
     write_report(affected, affected_path)
     _print_summary(
         f"Dataset: {args.dataset}", chat.schema, report_path, affected_path, findings
     )
+    if _gate_failed(report, fail_on, fail_scope):
+        raise SystemExit(2)
 
 
 def _run_compare(args: argparse.Namespace) -> None:
-    _validate_similarity(args.similarity_threshold, args.min_text_length)
+    project = load_project_config(args.config, args.no_config)
+    fail_on, fail_scope, disabled_rules = _project_options(args, project)
+    id_field = _option(args.id_field, project, "compare", "id_field", None)
+    similarity_threshold = _option(
+        args.similarity_threshold,
+        project,
+        "compare",
+        "similarity_threshold",
+        0.95,
+    )
+    min_text_length = _option(
+        args.min_text_length, project, "compare", "min_text_length", 40
+    )
+    assert id_field is None or isinstance(id_field, str)
+    assert isinstance(similarity_threshold, (int, float))
+    assert isinstance(min_text_length, int)
+    _validate_similarity(float(similarity_threshold), min_text_length)
     split_values = [_parse_assignment(value, "--split") for value in args.split]
     if len(split_values) < 2:
         raise ConfigurationError("compare requires at least two --split values.")
@@ -216,10 +351,18 @@ def _run_compare(args: argparse.Namespace) -> None:
     duplicates = sorted(name for name, count in Counter(names).items() if count > 1)
     if duplicates:
         raise ConfigurationError(f"Duplicate split name(s): {', '.join(duplicates)}")
-    schema_values = [_parse_assignment(value, "--schema") for value in args.schema]
-    schema_map: dict[str, str] = {}
+    schema_values = [
+        _parse_assignment(value, "--schema") for value in (args.schema or [])
+    ]
+    schema_map = dict(project.section("compare").get("schemas", {}))
+    unknown_config_schemas = sorted(set(schema_map) - set(names))
+    if unknown_config_schemas:
+        raise ConfigurationError(
+            "Configured schema references unknown split(s): "
+            + ", ".join(unknown_config_schemas)
+        )
     for name, schema in schema_values:
-        if name in schema_map:
+        if sum(1 for item_name, _ in schema_values if item_name == name) > 1:
             raise ConfigurationError(f"Duplicate schema override for split '{name}'.")
         if name not in names:
             raise ConfigurationError(
@@ -238,7 +381,7 @@ def _run_compare(args: argparse.Namespace) -> None:
     structural_findings = []
     for name, path_value in split_values:
         result = read_dataset(Path(path_value))
-        chat = adapt_chat(result, schema_map.get(name, "auto"), args.id_field)
+        chat = adapt_chat(result, schema_map.get(name, "auto"), id_field)
         if chat.schema == "generic":
             raise ConfigurationError(
                 f"Split '{name}' is not a recognized chat dataset; pass an explicit chat --schema."
@@ -253,17 +396,21 @@ def _run_compare(args: argparse.Namespace) -> None:
 
     findings = structural_findings + compare_splits(
         splits,
-        args.similarity_threshold,
-        args.min_text_length,
-        args.id_field,
+        float(similarity_threshold),
+        min_text_length,
+        id_field,
     )
+    findings = [finding for finding in findings if finding.code not in disabled_rules]
     report = build_comparison_report(
         splits,
         findings,
-        args.similarity_threshold,
-        args.min_text_length,
-        args.id_field,
+        float(similarity_threshold),
+        min_text_length,
+        id_field,
+        project.path,
+        disabled_rules,
     )
+    _apply_baseline_and_hash(report, args.baseline)
     affected = build_affected_records(findings)
     write_report(report, report_path)
     write_report(affected, affected_path)
@@ -271,6 +418,8 @@ def _run_compare(args: argparse.Namespace) -> None:
     _print_summary(
         f"Splits: {', '.join(names)}", schemas, report_path, affected_path, findings
     )
+    if _gate_failed(report, fail_on, fail_scope):
+        raise SystemExit(2)
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -389,6 +389,9 @@ def _adapt_openai(
     findings.extend(tool_findings)
     messages: list[ConversationMessage] = []
     known_call_ids: set[str] = set()
+    pending_call_ids: set[str] = set()
+    resolved_call_ids: set[str] = set()
+    call_turns: dict[str, int] = {}
     for turn, raw in enumerate(raw_messages):
         if not isinstance(raw, dict):
             findings.append(
@@ -415,6 +418,17 @@ def _adapt_openai(
                 )
             )
             continue
+        if pending_call_ids and role != "tool":
+            findings.append(
+                _invalid_record(
+                    result,
+                    record,
+                    id_field,
+                    "TOOL_RESULT_SEQUENCE",
+                    "A non-tool message appears before all pending tool calls have results.",
+                    turn,
+                )
+            )
         content = raw.get("content")
         raw_calls = raw.get("tool_calls")
         calls: list[dict[str, Any]] = []
@@ -430,10 +444,11 @@ def _adapt_openai(
                         turn,
                     )
                 )
-            calls, call_findings, call_ids = _validate_tool_calls(
+            validated_calls, call_findings, call_ids = _validate_tool_calls(
                 result, record, turn, raw_calls, tool_names, id_field
             )
             findings.extend(call_findings)
+            calls = validated_calls if role == "assistant" else []
             for duplicate_id in sorted(known_call_ids & call_ids):
                 findings.append(
                     _invalid_record(
@@ -445,7 +460,12 @@ def _adapt_openai(
                         turn,
                     )
                 )
-            known_call_ids.update(call_ids)
+            if role == "assistant":
+                new_call_ids = call_ids - known_call_ids
+                known_call_ids.update(call_ids)
+                pending_call_ids.update(new_call_ids)
+                for call_id in new_call_ids:
+                    call_turns[call_id] = turn
         if content is not None and not isinstance(content, str):
             findings.append(
                 _invalid_record(
@@ -472,21 +492,45 @@ def _adapt_openai(
                 )
             )
         tool_call_id = raw.get("tool_call_id")
-        if role == "tool" and (
-            not isinstance(tool_call_id, str) or tool_call_id not in known_call_ids
-        ):
-            findings.append(
-                _invalid_record(
-                    result,
-                    record,
-                    id_field,
-                    "TOOL_RESULT_ORPHANED",
-                    "Tool message does not match an earlier tool call id.",
-                    turn,
+        if role == "tool":
+            if not isinstance(tool_call_id, str) or tool_call_id not in known_call_ids:
+                findings.append(
+                    _invalid_record(
+                        result,
+                        record,
+                        id_field,
+                        "TOOL_RESULT_ORPHANED",
+                        "Tool message does not match an earlier tool call id.",
+                        turn,
+                    )
                 )
-            )
-            tool_call_id = tool_call_id if isinstance(tool_call_id, str) else None
+                tool_call_id = tool_call_id if isinstance(tool_call_id, str) else None
+            elif tool_call_id in resolved_call_ids:
+                findings.append(
+                    _invalid_record(
+                        result,
+                        record,
+                        id_field,
+                        "TOOL_RESULT_DUPLICATE",
+                        f"Tool call id '{tool_call_id}' has more than one result.",
+                        turn,
+                    )
+                )
+            else:
+                resolved_call_ids.add(tool_call_id)
+                pending_call_ids.discard(tool_call_id)
         messages.append(ConversationMessage(role, content, calls, tool_call_id))
+    for call_id in sorted(pending_call_ids):
+        findings.append(
+            _invalid_record(
+                result,
+                record,
+                id_field,
+                "TOOL_RESULT_MISSING",
+                f"Tool call id '{call_id}' has no result message.",
+                call_turns[call_id],
+            )
+        )
     findings.extend(_flow_findings(result, record, messages, id_field))
     example = ConversationExample(
         record,
@@ -650,6 +694,8 @@ def adapt_chat(
 ) -> ChatResult:
     if schema not in SCHEMAS:
         raise ConfigurationError(f"Unsupported schema: {schema}")
+    if id_field and id_field not in result.fields:
+        raise ConfigurationError(f"Unknown field(s): {id_field}")
     resolved = detect_schema(result) if schema == "auto" else schema
     if resolved == "generic":
         return ChatResult("generic", [], [])
