@@ -3,17 +3,35 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "dataset-doctor"
-version = "0.1.0"
-description = "Deterministic, AI-free checks for text datasets"
+name = "finelint"
+version = "0.2.0"
+description = "Facts for fine-tuning data. No models, no verdicts."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-authors = [{ name = "Dataset-Doctor contributors" }]
+authors = [{ name = "FineLint contributors" }]
 dependencies = []
+keywords = ["fine-tuning", "dataset", "data-quality", "llm", "cli"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.urls]
+Homepage = "https://github.com/denizaslan36/FineLint"
+Repository = "https://github.com/denizaslan36/FineLint"
+Issues = "https://github.com/denizaslan36/FineLint/issues"
 
 [project.scripts]
-dataset-doctor = "dataset_doctor.cli:main"
+finelint = "finelint.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

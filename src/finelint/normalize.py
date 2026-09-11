@@ -52,9 +52,8 @@ def minhash_signature(features: Iterable[str]) -> tuple[int, ...]:
         value = (high << 32) | low
         for index, (multiplier, offset) in enumerate(_MINHASH_PARAMETERS):
             permuted = (multiplier * value + offset) & _MASK_64
-            if permuted < minima[index]:
-                minima[index] = permuted
-    return tuple(minima) if found else tuple()
+            minima[index] = min(minima[index], permuted)
+    return tuple(minima) if found else ()
 
 
 def minhash_bands(signature: tuple[int, ...]) -> tuple[tuple[int, int], ...]:

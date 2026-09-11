@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import io
 import json
 import tempfile
@@ -8,14 +7,14 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-from dataset_doctor.analyzer import ConfigurationError, analyze
-from dataset_doctor.cli import main
-from dataset_doctor.models import ScanConfig
-from dataset_doctor.readers import read_dataset
-from dataset_doctor.report import build_report
+from finelint.analyzer import ConfigurationError, analyze
+from finelint.cli import main
+from finelint.models import ScanConfig
+from finelint.readers import read_dataset
+from finelint.report import build_report
 
 
-class DatasetDoctorTests(unittest.TestCase):
+class FineLintTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
@@ -38,12 +37,14 @@ class DatasetDoctorTests(unittest.TestCase):
         path = self.write(
             "broken.jsonl",
             '{"text":"valid row","kind":"a"}\n'
-            '{not json}\n'
-            '\n'
-            '[1,2,3]\n'
+            "{not json}\n"
+            "\n"
+            "[1,2,3]\n"
             '{"text":12,"kind":"b"}\n',
         )
-        result, _, _, findings = self.scan(path, fields=["text"], required_fields=["text"])
+        result, _, _, findings = self.scan(
+            path, fields=["text"], required_fields=["text"]
+        )
         self.assertEqual(len(result.records), 2)
         codes = [finding.code for finding in findings]
         self.assertIn("MALFORMED_JSON", codes)
@@ -61,7 +62,7 @@ class DatasetDoctorTests(unittest.TestCase):
     def test_exact_and_normalized_duplicates_are_grouped(self) -> None:
         path = self.write(
             "duplicates.jsonl",
-            '\n'.join(
+            "\n".join(
                 [
                     json.dumps({"text": "Hello   World"}),
                     json.dumps({"text": "Hello   World"}),
@@ -71,7 +72,9 @@ class DatasetDoctorTests(unittest.TestCase):
         )
         _, _, _, findings = self.scan(path, fields=["text"])
         exact = [finding for finding in findings if finding.code == "EXACT_DUPLICATE"]
-        normalized = [finding for finding in findings if finding.code == "NORMALIZED_DUPLICATE"]
+        normalized = [
+            finding for finding in findings if finding.code == "NORMALIZED_DUPLICATE"
+        ]
         self.assertEqual(len(exact), 1)
         self.assertEqual(len(exact[0].records), 2)
         self.assertEqual(len(normalized), 1)
@@ -102,7 +105,9 @@ class DatasetDoctorTests(unittest.TestCase):
             input_fields=["prompt"],
             output_fields=["answer"],
         )
-        conflict = [finding for finding in findings if finding.code == "CONFLICTING_OUTPUT"]
+        conflict = [
+            finding for finding in findings if finding.code == "CONFLICTING_OUTPUT"
+        ]
         self.assertEqual(len(conflict), 1)
         self.assertEqual([record["row"] for record in conflict[0].records], [1, 2])
 
@@ -112,10 +117,22 @@ class DatasetDoctorTests(unittest.TestCase):
             self.scan(path, fields=["prompt"], input_fields=["prompt"])
 
     def test_report_has_no_quality_verdict(self) -> None:
-        path = self.write("clean.jsonl", '{"text":"A sufficiently long and unique example for this dataset record."}\n')
+        path = self.write(
+            "clean.jsonl",
+            '{"text":"A sufficiently long and unique example for this dataset record."}\n',
+        )
         result, config, fields, findings = self.scan(path, fields=["text"])
         report = build_report(result, config, fields, findings)
-        self.assertEqual(set(report), {"metadata", "configuration", "summary", "findings"})
+        self.assertEqual(
+            set(report),
+            {
+                "report_schema_version",
+                "metadata",
+                "configuration",
+                "summary",
+                "findings",
+            },
+        )
         encoded = json.dumps(report).casefold()
         self.assertNotIn("quality_score", encoded)
         self.assertNotIn("verdict", encoded)
@@ -123,11 +140,26 @@ class DatasetDoctorTests(unittest.TestCase):
     def test_cli_writes_full_report_and_returns_success_with_findings(self) -> None:
         path = self.write("cli.jsonl", '{"text":"same"}\n{"text":"same"}\n')
         report_path = self.root / "report.json"
+        affected_path = self.root / "affected.json"
         stdout = io.StringIO()
         with redirect_stdout(stdout):
-            main(["inspect", str(path), "--fields", "text", "--report", str(report_path)])
+            main(
+                [
+                    "inspect",
+                    str(path),
+                    "--fields",
+                    "text",
+                    "--report",
+                    str(report_path),
+                    "--affected-records",
+                    str(affected_path),
+                ]
+            )
         report = json.loads(report_path.read_text(encoding="utf-8"))
         self.assertIn("EXACT_DUPLICATE", report["summary"]["by_code"])
+        self.assertEqual(
+            len(json.loads(affected_path.read_text(encoding="utf-8"))["records"]), 2
+        )
         self.assertIn("Report:", stdout.getvalue())
 
     def test_cli_fatal_error_returns_nonzero(self) -> None:

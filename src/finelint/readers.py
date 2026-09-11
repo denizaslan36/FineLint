@@ -31,7 +31,9 @@ def read_dataset(path: Path, explicit_format: str | None = None) -> ReadResult:
         return _read_csv(path)
     if selected_format in {"jsonl", "ndjson"}:
         return _read_jsonl(path)
-    raise DatasetReadError("Unsupported format. Use a .csv or .jsonl file, or pass --format.")
+    raise DatasetReadError(
+        "Unsupported format. Use a .csv or .jsonl file, or pass --format."
+    )
 
 
 def _read_csv(path: Path) -> ReadResult:
@@ -54,9 +56,13 @@ def _read_csv(path: Path) -> ReadResult:
 
             if not header or all(not name.strip() for name in header):
                 raise DatasetReadError("CSV header is empty.")
-            duplicates = sorted(name for name, count in Counter(header).items() if count > 1)
+            duplicates = sorted(
+                name for name, count in Counter(header).items() if count > 1
+            )
             if duplicates:
-                raise DatasetReadError(f"CSV contains duplicate headers: {', '.join(duplicates)}")
+                raise DatasetReadError(
+                    f"CSV contains duplicate headers: {', '.join(duplicates)}"
+                )
             if any(not name.strip() for name in header):
                 raise DatasetReadError("CSV contains an empty header name.")
 
@@ -76,7 +82,9 @@ def _read_csv(path: Path) -> ReadResult:
                         )
                     values: list[Any] = row[: len(header)]
                     values.extend([None] * (len(header) - len(values)))
-                    records.append(Record(index=index, line=line, data=dict(zip(header, values))))
+                    records.append(
+                        Record(index=index, line=line, data=dict(zip(header, values)))
+                    )
             except csv.Error as exc:
                 findings.append(
                     Finding(
@@ -145,7 +153,9 @@ def _read_jsonl(path: Path) -> ReadResult:
                     if key not in known_fields:
                         known_fields.add(key)
                         fields.append(key)
-                records.append(Record(index=len(records) + 1, line=line_number, data=value))
+                records.append(
+                    Record(index=len(records) + 1, line=line_number, data=value)
+                )
     except UnicodeDecodeError as exc:
         raise DatasetReadError(f"Dataset is not valid UTF-8: {exc}") from exc
 

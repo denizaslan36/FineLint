@@ -6,7 +6,13 @@ from functools import lru_cache
 from typing import Any
 
 from .models import Finding, ReadResult, Record, ScanConfig
-from .normalize import character_shingles, jaccard, minhash_bands, minhash_signature, normalize_text
+from .normalize import (
+    character_shingles,
+    jaccard,
+    minhash_bands,
+    minhash_signature,
+    normalize_text,
+)
 
 PREVIEW_LENGTH = 160
 LSH_BUCKET_WINDOW = 64
@@ -56,10 +62,16 @@ def choose_text_fields(result: ReadResult, requested: list[str] | None) -> list[
     for field in result.fields:
         counts = counters[field]
         observed = sum(counts.values())
-        if observed and counts["string"] / observed >= 0.8 and not _is_identifier_field(field):
+        if (
+            observed
+            and counts["string"] / observed >= 0.8
+            and not _is_identifier_field(field)
+        ):
             selected.append(field)
     if not selected:
-        raise ConfigurationError("No text fields were detected. Select fields explicitly with --fields.")
+        raise ConfigurationError(
+            "No text fields were detected. Select fields explicitly with --fields."
+        )
     return selected
 
 
@@ -73,13 +85,19 @@ def _ref(record: Record, config: ScanConfig) -> dict[str, Any]:
 def _preview(value: Any) -> str:
     if value is None:
         return "null"
-    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)
+    text = (
+        value
+        if isinstance(value, str)
+        else json.dumps(value, ensure_ascii=False, sort_keys=True)
+    )
     return text if len(text) <= PREVIEW_LENGTH else text[: PREVIEW_LENGTH - 1] + "…"
 
 
 def _raw_key(record: Record, fields: list[str]) -> str:
     values = [[field, record.data.get(field)] for field in fields]
-    return json.dumps(values, ensure_ascii=False, sort_keys=False, separators=(",", ":"))
+    return json.dumps(
+        values, ensure_ascii=False, sort_keys=False, separators=(",", ":")
+    )
 
 
 def _normalized_values(record: Record, fields: list[str]) -> tuple[str, ...]:
@@ -91,12 +109,20 @@ def _normalized_values(record: Record, fields: list[str]) -> tuple[str, ...]:
         elif value is None:
             values.append("\0null")
         else:
-            values.append("\0" + json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+            values.append(
+                "\0"
+                + json.dumps(
+                    value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                )
+            )
     return tuple(values)
 
 
 def _combined_text(record: Record, fields: list[str]) -> str:
-    return "\n".join(f"{field}: {value}" for field, value in zip(fields, _normalized_values(record, fields)))
+    return "\n".join(
+        f"{field}: {value}"
+        for field, value in zip(fields, _normalized_values(record, fields))
+    )
 
 
 def _validate_config(result: ReadResult, config: ScanConfig, fields: list[str]) -> None:
@@ -108,7 +134,9 @@ def _validate_config(result: ReadResult, config: ScanConfig, fields: list[str]) 
     if missing:
         raise ConfigurationError(f"Unknown field(s): {', '.join(missing)}")
     if bool(config.input_fields) != bool(config.output_fields):
-        raise ConfigurationError("--input-fields and --output-fields must be used together.")
+        raise ConfigurationError(
+            "--input-fields and --output-fields must be used together."
+        )
     if not 0.0 <= config.similarity_threshold <= 1.0:
         raise ConfigurationError("--similarity-threshold must be between 0 and 1.")
     if config.min_text_length < 1:
@@ -117,7 +145,9 @@ def _validate_config(result: ReadResult, config: ScanConfig, fields: list[str]) 
         raise ConfigurationError("At least one text field is required.")
 
 
-def _structural_findings(result: ReadResult, config: ScanConfig, fields: list[str]) -> list[Finding]:
+def _structural_findings(
+    result: ReadResult, config: ScanConfig, fields: list[str]
+) -> list[Finding]:
     findings: list[Finding] = []
     required = set(config.required_fields)
     presence = Counter(field for record in result.records for field in record.data)
@@ -128,9 +158,18 @@ def _structural_findings(result: ReadResult, config: ScanConfig, fields: list[st
     }
 
     for record in result.records:
-        if not record.data or all(value is None or (isinstance(value, str) and not value.strip()) for value in record.data.values()):
+        if not record.data or all(
+            value is None or (isinstance(value, str) and not value.strip())
+            for value in record.data.values()
+        ):
             findings.append(
-                Finding("EMPTY_RECORD", "structural", "error", "Record has no usable values.", [_ref(record, config)])
+                Finding(
+                    "EMPTY_RECORD",
+                    "structural",
+                    "error",
+                    "Record has no usable values.",
+                    [_ref(record, config)],
+                )
             )
         for field in sorted(required):
             value = record.data.get(field)
@@ -162,7 +201,14 @@ def _structural_findings(result: ReadResult, config: ScanConfig, fields: list[st
             if value is None:
                 if field not in required and field in record.data:
                     findings.append(
-                        Finding("NULL_TEXT_FIELD", "structural", "warning", f"Text field '{field}' is null.", [_ref(record, config)], [field])
+                        Finding(
+                            "NULL_TEXT_FIELD",
+                            "structural",
+                            "warning",
+                            f"Text field '{field}' is null.",
+                            [_ref(record, config)],
+                            [field],
+                        )
                     )
             elif not isinstance(value, str):
                 findings.append(
@@ -178,18 +224,31 @@ def _structural_findings(result: ReadResult, config: ScanConfig, fields: list[st
                 )
             elif not value.strip() and field not in required:
                 findings.append(
-                    Finding("BLANK_TEXT_FIELD", "structural", "warning", f"Text field '{field}' is blank.", [_ref(record, config)], [field])
+                    Finding(
+                        "BLANK_TEXT_FIELD",
+                        "structural",
+                        "warning",
+                        f"Text field '{field}' is blank.",
+                        [_ref(record, config)],
+                        [field],
+                    )
                 )
 
     if result.format == "jsonl":
         for field in result.fields:
-            typed = [(record, _type_name(record.data[field])) for record in result.records if field in record.data and record.data[field] is not None]
+            typed = [
+                (record, _type_name(record.data[field]))
+                for record in result.records
+                if field in record.data and record.data[field] is not None
+            ]
             counts = Counter(value_type for _, value_type in typed)
             if len(counts) <= 1:
                 continue
-            dominant = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+            dominant = min(counts.items(), key=lambda item: (-item[1], item[0]))[0]
             for record, value_type in typed:
-                if value_type != dominant and not (field in fields and value_type != "string"):
+                if value_type != dominant and not (
+                    field in fields and value_type != "string"
+                ):
                     findings.append(
                         Finding(
                             "TYPE_MISMATCH",
@@ -204,7 +263,9 @@ def _structural_findings(result: ReadResult, config: ScanConfig, fields: list[st
     return findings
 
 
-def _duplicate_findings(result: ReadResult, config: ScanConfig, fields: list[str]) -> tuple[list[Finding], dict[tuple[str, ...], list[Record]]]:
+def _duplicate_findings(
+    result: ReadResult, config: ScanConfig, fields: list[str]
+) -> tuple[list[Finding], dict[tuple[str, ...], list[Record]]]:
     findings: list[Finding] = []
     raw_groups: dict[str, list[Record]] = defaultdict(list)
     normalized_groups: dict[tuple[str, ...], list[Record]] = defaultdict(list)
@@ -270,11 +331,16 @@ def _near_duplicate_findings(
     representatives = [
         group[0]
         for key, group in normalized_groups.items()
-        if any(key) and all(isinstance(group[0].data.get(field), str) for field in fields)
+        if any(key)
+        and all(isinstance(group[0].data.get(field), str) for field in fields)
     ]
     texts = [_combined_text(record, fields) for record in representatives]
-    eligible = [index for index, text in enumerate(texts) if len(text) >= config.min_text_length]
-    buckets: dict[tuple[int, int], deque[int]] = defaultdict(lambda: deque(maxlen=LSH_BUCKET_WINDOW))
+    eligible = [
+        index for index, text in enumerate(texts) if len(text) >= config.min_text_length
+    ]
+    buckets: dict[tuple[int, int], deque[int]] = defaultdict(
+        lambda: deque(maxlen=LSH_BUCKET_WINDOW)
+    )
     union = _UnionFind(len(representatives))
     matches: list[tuple[int, int, float]] = []
 
@@ -290,7 +356,9 @@ def _near_duplicate_findings(
             candidate_counts.update(buckets[key])
         candidates = [
             candidate
-            for candidate, shared_values in candidate_counts.most_common(MAX_NEAR_CANDIDATES)
+            for candidate, shared_values in candidate_counts.most_common(
+                MAX_NEAR_CANDIDATES
+            )
             if shared_values >= MIN_SHARED_MINHASH_VALUES
         ]
         current_shingles = shingles(index)
@@ -330,7 +398,10 @@ def _near_duplicate_findings(
                 "near_duplicate",
                 "warning",
                 f"{len(records)} records form a highly similar group.",
-                [_ref(record, config) for record in sorted(records, key=lambda record: record.index)],
+                [
+                    _ref(record, config)
+                    for record in sorted(records, key=lambda record: record.index)
+                ],
                 fields,
                 {"matches": edge_values, "preview": _preview(texts[member_indexes[0]])},
             )
@@ -369,7 +440,9 @@ def _conflict_findings(result: ReadResult, config: ScanConfig) -> list[Finding]:
                     config.input_fields + config.output_fields,
                     {
                         "input_preview": _preview("\n".join(input_key)),
-                        "distinct_outputs": [_preview("\n".join(output)) for output in outputs],
+                        "distinct_outputs": [
+                            _preview("\n".join(output)) for output in outputs
+                        ],
                     },
                 )
             )

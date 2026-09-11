@@ -5,4 +5,8 @@ __pycache__/
 build/
 dist/
 .venv/
-*.doctor-report.json
+.ruff_cache/
+*.finelint-report.json
+*.finelint-affected.json
+finelint-comparison-report.json
+finelint-comparison-affected.json

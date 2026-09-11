@@ -1,158 +1,201 @@
 <div align="center">
 
-# Dataset-Doctor
+# FineLint
 
-**Find duplicate, suspicious, and structurally broken examples before they reach your training pipeline.**
+**Facts for fine-tuning data. No models, no verdicts.**
 
+[![Test](https://github.com/denizaslan36/FineLint/actions/workflows/test.yml/badge.svg)](https://github.com/denizaslan36/FineLint/actions/workflows/test.yml)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![AI free](https://img.shields.io/badge/AI-free-2ea44f)](#what-it-checks)
+[![AI free](https://img.shields.io/badge/AI-free-2ea44f)](#what-finelint-reports)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Terminal only · Deterministic · Local · No quality score
+Terminal only · Deterministic · Local · Vendor neutral
 
 </div>
 
-Dataset-Doctor is a focused inspector for CSV and JSONL text datasets. Give it a
-file and it returns an actionable list of malformed records, exact copies,
-normalization-hidden duplicates, highly similar examples, and conflicting outputs.
+FineLint inspects text datasets before fine-tuning. It identifies malformed chat
+records, duplicate examples, suspicious conversation flows, conflicting targets,
+and leakage between train, validation, and test splits.
 
-It does **not** call a model, create embeddings, use the network, change your source
-file, or decide whether your dataset is “good” or “bad.”
+FineLint does **not** call a model, create embeddings, use an API, change your source
+files, or label a dataset as good or bad. Every result points back to concrete rows,
+lines, turns, and deterministic evidence.
 
-## Quick start
+## Install
 
 ```bash
-git clone https://github.com/denizaslan36/Dataset-Doctor.git
-cd Dataset-Doctor
-pipx install .
-
-dataset-doctor inspect data.jsonl
+pipx install finelint
 ```
 
-No runtime dependencies are required. Python 3.10 or newer is enough.
+Or install the current source version:
+
+```bash
+git clone https://github.com/denizaslan36/FineLint.git
+cd FineLint
+pipx install .
+```
+
+FineLint has no runtime dependencies and supports Python 3.10 through 3.14.
+
+## Inspect one dataset
+
+```bash
+finelint inspect conversations.jsonl
+```
+
+FineLint detects these chat schemas automatically:
+
+| Schema | Recognized shape |
+| --- | --- |
+| OpenAI chat | `messages` with `role`, `content`, and optional tool calls |
+| ShareGPT | `conversations` with `from` and `value` |
+| Alpaca | `instruction`, optional `input`, and `output` |
+| Generic text | Top-level string fields in CSV or JSONL |
+
+Choose a schema explicitly when needed:
+
+```bash
+finelint inspect conversations.jsonl --schema openai
+finelint inspect sharegpt.jsonl --schema sharegpt
+finelint inspect alpaca.jsonl --schema alpaca
+finelint inspect custom.csv --schema generic --fields prompt --fields response
+```
+
+If a file contains conflicting chat shapes, auto-detection stops and asks for an
+explicit schema instead of guessing.
+
+## Compare dataset splits
+
+```bash
+finelint compare \
+  --split train=train.jsonl \
+  --split validation=validation.jsonl \
+  --split test=test.jsonl
+```
+
+`compare` finds cross-split overlap at two levels:
+
+- whole examples: exact, normalized, and highly similar conversations;
+- training contexts: repeated prompts or histories, including contexts paired with
+  different assistant targets.
+
+Each split is adapted independently, so an OpenAI-formatted train file can be
+compared with a ShareGPT validation file. Override one split when auto-detection is
+not enough:
+
+```bash
+finelint compare \
+  --split train=train.jsonl \
+  --split validation=validation.jsonl \
+  --schema train=openai \
+  --schema validation=sharegpt
+```
+
+## What FineLint reports
+
+| Area | Examples |
+| --- | --- |
+| File structure | Malformed JSONL, non-object rows, empty lines, malformed CSV, wrong row widths |
+| Chat schema | Missing messages, invalid roles or content, empty turns, missing assistant targets |
+| Tool calling | Invalid tool definitions, malformed arguments JSON, undefined tools, orphaned results |
+| Conversation flow | Consecutive roles, late system messages, repeated turns |
+| Duplication | Exact copies, Unicode/case/whitespace-hidden copies, near duplicates |
+| Split leakage | Repeated examples or contexts across named splits, conflicting targets |
+
+Definite schema violations are `error` findings. Patterns that may be intentional are
+`warning` findings. Neither severity is an overall dataset score or verdict.
+
+Near-duplicate candidates come from a bounded deterministic MinHash/LSH index and
+are verified with character 5-gram Jaccard similarity. Adjust the conservative
+default threshold when needed:
+
+```bash
+finelint inspect data.jsonl --similarity-threshold 0.92 --min-text-length 60
+```
+
+## Outputs
+
+Every successful command writes two JSON files:
 
 ```text
-Dataset: data.jsonl
-Text fields: prompt, answer
-Findings: 3
-  conflicting_output: 1
-  exact_duplicate: 1
-  structural: 1
-Examples:
-  [MISSING_REQUIRED_FIELD] Required field 'prompt' is missing or empty. (row 5)
-  [EXACT_DUPLICATE] 2 records contain exactly the same selected field values. (row 3, row 4)
-  [CONFLICTING_OUTPUT] The same normalized input has different normalized outputs. (row 1, row 2, row 3, row 4)
-Report: /path/to/data.doctor-report.json
+conversations.finelint-report.json
+conversations.finelint-affected.json
 ```
 
-The terminal stays compact. The generated JSON report contains the complete list,
-including every affected row and line number.
+The report contains metadata, the effective configuration, counts, and complete
+findings. Every finding has a deterministic ID such as `FL-a62db0194f2e9c11`.
 
-## What it checks
+The affected-records file is a compact index of every referenced record and its
+reason codes. It deliberately contains no `keep`, `delete`, or `fix` decision.
 
-| Check | What it catches |
-| --- | --- |
-| Structural errors | Malformed JSONL, non-object records, empty lines, malformed CSV, and wrong CSV row widths |
-| Missing data | Required or commonly present fields that are missing, null, blank, or the wrong type |
-| Exact duplicates | Records with identical selected field values |
-| Normalized duplicates | Copies hidden by Unicode forms, casing, or whitespace differences |
-| Near duplicates | Highly similar records verified with character 5-gram Jaccard similarity |
-| Conflicting outputs | The same normalized input paired with different normalized outputs |
-
-Near-duplicate candidates are selected with a bounded, deterministic MinHash/LSH
-index. Candidate matches are then verified with exact Jaccard calculation. This keeps
-the scan practical without using embeddings or an all-pairs comparison.
-
-## Usage
-
-Dataset-Doctor detects top-level text fields automatically:
-
-```bash
-dataset-doctor inspect conversations.jsonl
-dataset-doctor inspect examples.csv
+```json
+{
+  "report_schema_version": 2,
+  "records": [
+    {
+      "split": "validation",
+      "dataset": "/data/validation.jsonl",
+      "row": 204,
+      "line": 204,
+      "turn": 1,
+      "reasons": [
+        {
+          "finding_id": "FL-a62db0194f2e9c11",
+          "code": "CROSS_SPLIT_EXACT_CONTEXT",
+          "category": "split_leakage",
+          "severity": "warning"
+        }
+      ]
+    }
+  ]
+}
 ```
 
-For a known schema, select fields and assign their roles explicitly:
+Use custom output paths with `--report` and `--affected-records`. FineLint refuses
+to overwrite an input dataset.
+
+A completed scan exits with code `0`, even when it reports findings. Invalid input,
+configuration problems, and fatal processing errors return a nonzero code.
+
+## Generic datasets
+
+The original CSV/JSONL field inspector remains available:
 
 ```bash
-dataset-doctor inspect conversations.jsonl \
+finelint inspect data.jsonl \
+  --schema generic \
   --fields instruction \
   --fields response \
   --input-fields instruction \
   --output-fields response \
   --required-fields instruction \
-  --id-field id \
-  --similarity-threshold 0.95 \
-  --report ./conversations.doctor-report.json
+  --id-field id
 ```
 
-Field options are repeatable. `--input-fields` and `--output-fields` must be used
+Field options are repeatable. `--input-fields` and `--output-fields` must be supplied
 together.
-
-### Options
-
-| Option | Purpose | Default |
-| --- | --- | --- |
-| `--format csv\|jsonl` | Override extension-based format detection | File extension |
-| `--fields FIELD` | Choose a text field to inspect | Auto-detected |
-| `--input-fields FIELD` | Define input fields for conflict checks | Disabled |
-| `--output-fields FIELD` | Define output fields for conflict checks | Disabled |
-| `--required-fields FIELD` | Require a non-empty value | Disabled |
-| `--id-field FIELD` | Add a dataset ID to record references | Row and line only |
-| `--similarity-threshold FLOAT` | Set the near-duplicate Jaccard threshold | `0.95` |
-| `--min-text-length INTEGER` | Minimum text length for near-duplicate checks | `40` |
-| `--report PATH` | Choose the JSON report path | `./<name>.doctor-report.json` |
-
-## Report format
-
-Reports have four stable top-level sections:
-
-```json
-{
-  "metadata": {
-    "tool": "dataset-doctor",
-    "version": "0.1.0",
-    "dataset": "/path/to/data.jsonl",
-    "format": "jsonl",
-    "records_read": 5000
-  },
-  "configuration": {
-    "fields": ["prompt", "answer"],
-    "similarity_threshold": 0.95,
-    "min_text_length": 40
-  },
-  "summary": {
-    "total_findings": 12,
-    "by_category": {"exact_duplicate": 3, "structural": 9}
-  },
-  "findings": []
-}
-```
-
-Each finding includes a stable code, category, severity, explanation, affected
-records, relevant fields, and evidence where applicable. Similar records are grouped
-instead of producing a noisy list of every possible pair.
-
-A completed scan exits with code `0`, even when findings exist. Invalid arguments,
-unreadable input, and fatal processing errors return a nonzero code.
 
 ## Development
 
-Run from source:
-
 ```bash
-PYTHONPATH=src python3 -m dataset_doctor inspect data.jsonl
+git clone https://github.com/denizaslan36/FineLint.git
+cd FineLint
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+  python3 -m unittest discover -s tests -v
+
+PYTHONPATH=src python3 -m finelint --help
 ```
 
-Run the test suite:
+The runtime uses only the Python standard library. Pull requests should preserve
+deterministic output, source-file safety, and the no-model/no-verdict boundary.
 
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest discover -s tests -v
-```
+## Roadmap
 
-The project uses only the Python standard library at runtime. The test suite covers
-CSV and JSONL parsing, structural errors, duplicate grouping, similarity evidence,
-conflicting outputs, report safety, and CLI exit behavior.
+- dataset facts: length, role, source, Unicode script, and template distributions;
+- reproducible project rules through `.finelint.toml` and report diffs;
+- DPO, evaluation, and deterministic PII/secret checks;
+- a stable adapter and rule extension interface.
 
 ## License
 
